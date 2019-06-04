@@ -149,6 +149,7 @@ class Renderer(QtWidgets.QOpenGLWidget):
 
             self.to_capture = False
 
+        # init save to video
         if self.to_record:
             with self.capture_scope:
                 self.vao.render()
@@ -160,12 +161,14 @@ class Renderer(QtWidgets.QOpenGLWidget):
             data = GLUtil.serialize_buffer(self.capture_texture)
             self.recording.append_data(data)
 
+        # close save to video
         else:
             if self.recording:
                 self.recording.close()
                 print("finished recording!")
             self.recording = None
 
+        # force update frame
         self.update()
 
     def keyPressEvent(self, e):
