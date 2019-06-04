@@ -24,7 +24,6 @@ void main()
 
     vec2 uv = vec2(xy / vec2(u_width, u_height));
 
-
     out_color[i] = in_color[i] * 0.5;
     out_color[i].w = 1.0;
 }
