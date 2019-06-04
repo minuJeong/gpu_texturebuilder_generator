@@ -15,7 +15,13 @@ from watchdog.events import FileSystemEventHandler
 width, height = 512, 512
 
 
+def log(*arg):
+    context = str(*arg)
+    print("[Texture Builder] {}".format(context))
+
+
 class FSEventHandler(FileSystemEventHandler):
+
     def __init__(self, callback):
         super(FSEventHandler, self).__init__()
         self.callback = callback
@@ -25,6 +31,7 @@ class FSEventHandler(FileSystemEventHandler):
 
 
 class WatchDog(QThread):
+
     bark = pyqtSignal()
 
     def __init__(self, bark_callback):
@@ -43,6 +50,7 @@ class WatchDog(QThread):
 
 
 class GLUtil(object):
+
     @classmethod
     def screen_vao(cls, gl, program):
         vbo = [
@@ -91,6 +99,7 @@ class GLUtil(object):
 
 
 class Renderer(QtWidgets.QOpenGLWidget):
+
     def __init__(self):
         super(Renderer, self).__init__()
         self.setMinimumSize(width, height)
@@ -112,23 +121,70 @@ class Renderer(QtWidgets.QOpenGLWidget):
             vertex_shader=GLUtil.shader("./gl/vs.glsl"),
             fragment_shader=GLUtil.shader("./gl/fs.glsl"),
         )
-        self.u_time = None
+        u_time = None
         if "u_time" in prog:
-            self.u_time = prog["u_time"]
-        return prog
+            u_time = prog["u_time"]
+        return prog, u_time
+
+    def build_cs(self, gl):
+        cs = gl.compute_shader(GLUtil.shader("./gl/cs/cs.glsl"))
+
+        u_time = None
+        u_width = None
+        u_height = None
+        if "u_time" in cs:
+            u_time = cs["u_time"]
+
+        if "u_width" in cs:
+            u_width = cs["u_width"]
+
+        if "u_height" in cs:
+            u_height = cs["u_height"]
+
+        buf_in = gl.buffer(reserve=width * height * 4 * 4)
+        buf_in.bind_to_storage_buffer(0)
+
+        buf_out = gl.buffer(reserve=width * height * 4 * 4)
+        buf_out.bind_to_storage_buffer(1)
+
+        return cs, [u_time, u_width, u_height], [buf_in, buf_out]
 
     def recompile(self):
+        """
+        called everytime any files under gl directory changes
+        """
+
+        self.vaos = []
         try:
-            self.program = self.build_prog(self.gl)
-            self.vao = GLUtil.screen_vao(self.gl, self.program)
-            print("shader recompiled.")
+            self.program, self.u_time = self.build_prog(self.gl)
+            vao = GLUtil.screen_vao(self.gl, self.program)
+            self.vaos.append(vao)
+
+            self.compute, uniforms, buffers = self.build_cs(self.gl)
+            self.u_cstime, self.u_width, self.u_height = uniforms
+            self.buf_in, self.buf_out = buffers
+
+            if self.u_width:
+                self.u_width.value = width
+
+            if self.u_height:
+                self.u_height.value = height
+
+            self.gx, self.gy = int(width / 8), int(height / 8)
+
+            log("[Renderer] shader recompiled.")
+
         except Exception as e:
-            print(e)
+            log(e)
 
     def initializeGL(self):
+        """
+        called only once when start
+        """
+
         self.gl = mg.create_context()
-        self.program = self.build_prog(self.gl)
-        self.vao = GLUtil.screen_vao(self.gl, self.program)
+
+        self.recompile()
 
         self.to_capture = False
         self.to_record = False
@@ -137,12 +193,30 @@ class Renderer(QtWidgets.QOpenGLWidget):
         self.capture_scope = self.gl.scope(capture_framebuffer)
         self.recording = None
 
+        self.to_capture_buffer_in = False
+        self.to_capture_buffer_out = False
+
     def paintGL(self):
-        if self.u_time:
-            self.u_time.value = time.time() % 1000
+        """
+        called every frame
+        """
 
         # update screen
-        self.vao.render()
+        list(map(lambda x: x.render(), self.vaos))
+
+        t = time.time() % 1000
+        if self.u_time:
+            self.u_time.value = t
+
+        if self.u_cstime:
+            self.u_cstime.value = t
+
+        if self.buf_in:
+            cur_framebuffer = self.gl.detect_framebuffer()
+            cur_framebuffer.read_into(
+                self.buf_in, None, 4, dtype="f4"
+            )
+        self.compute.run(self.gx, self.gy)
 
         # save to png
         if self.to_capture:
@@ -152,7 +226,7 @@ class Renderer(QtWidgets.QOpenGLWidget):
             dst = self.get_filepath("./capture_{}.png")
             data = GLUtil.serialize_buffer(self.capture_texture)
             ii.imwrite(dst, data)
-            print("captured!")
+            log("captured!")
 
             self.to_capture = False
 
@@ -162,7 +236,7 @@ class Renderer(QtWidgets.QOpenGLWidget):
                 self.vao.render()
 
             if not self.recording:
-                print("start recording..")
+                log("start recording..")
                 dst = self.get_filepath("./capture_{}.mp4")
                 self.recording = ii.get_writer(dst, fps=30)
             data = GLUtil.serialize_buffer(self.capture_texture)
@@ -172,8 +246,20 @@ class Renderer(QtWidgets.QOpenGLWidget):
         else:
             if self.recording:
                 self.recording.close()
-                print("finished recording!")
+                log("finished recording!")
             self.recording = None
+
+        if self.to_capture_buffer_in:
+            dst = self.get_filepath("./buf_in_{}.png")
+            data = GLUtil.serialize_buffer(self.buf_in)
+            ii.imwrite(dst, data)
+            self.to_capture_buffer_in = False
+
+        if self.to_capture_buffer_out:
+            dst = self.get_filepath("./buf_out_{}.png")
+            data = GLUtil.serialize_buffer(self.buf_out)
+            ii.imwrite(dst, data)
+            self.to_capture_buffer_out = False
 
         # force update frame
         self.update()
@@ -190,11 +276,17 @@ class Renderer(QtWidgets.QOpenGLWidget):
         if k == 32:
             self.to_capture = True
 
+        elif k == 90:
+            self.to_capture_buffer_in = True
+
+        elif k == 88:
+            self.to_capture_buffer_out = True
+
         elif k == 16777249:
             self.to_record = False
 
         else:
-            print("undefined key pressed: {}".format(k))
+            log("undefined key pressed: {}".format(k))
 
 
 def main():
