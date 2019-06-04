@@ -1,4 +1,5 @@
 import os
+import time
 
 import numpy as np
 import moderngl as mg
@@ -26,9 +27,10 @@ class FSEventHandler(FileSystemEventHandler):
 class WatchDog(QThread):
     bark = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, bark_callback):
         super(WatchDog, self).__init__()
         self.ehandler = FSEventHandler(self.on_watch)
+        self.bark.connect(bark_callback)
 
     def on_watch(self):
         self.bark.emit()
@@ -94,8 +96,7 @@ class Renderer(QtWidgets.QOpenGLWidget):
         self.setMinimumSize(width, height)
         self.setMaximumSize(width, height)
 
-        self.watchdog = WatchDog()
-        self.watchdog.bark.connect(self.recompile)
+        self.watchdog = WatchDog(self.recompile)
         self.watchdog.start()
 
     def get_filepath(self, template):
@@ -111,6 +112,9 @@ class Renderer(QtWidgets.QOpenGLWidget):
             vertex_shader=GLUtil.shader("./gl/vs.glsl"),
             fragment_shader=GLUtil.shader("./gl/fs.glsl"),
         )
+        self.u_time = None
+        if "u_time" in prog:
+            self.u_time = prog["u_time"]
         return prog
 
     def recompile(self):
@@ -134,6 +138,9 @@ class Renderer(QtWidgets.QOpenGLWidget):
         self.recording = None
 
     def paintGL(self):
+        if self.u_time:
+            self.u_time.value = time.time() % 1000
+
         # update screen
         self.vao.render()
 
@@ -157,7 +164,7 @@ class Renderer(QtWidgets.QOpenGLWidget):
             if not self.recording:
                 print("start recording..")
                 dst = self.get_filepath("./capture_{}.mp4")
-                self.recording = ii.get_writer(dst)
+                self.recording = ii.get_writer(dst, fps=30)
             data = GLUtil.serialize_buffer(self.capture_texture)
             self.recording.append_data(data)
 
