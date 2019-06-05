@@ -8,6 +8,7 @@ import imageio as ii
 from PyQt5 import QtWidgets
 from PyQt5.QtCore import QThread
 from PyQt5.QtCore import pyqtSignal
+from PyQt5.Qt import Qt
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -127,6 +128,7 @@ class Renderer(QtWidgets.QOpenGLWidget):
         super(Renderer, self).__init__()
         self.setMinimumSize(width, height)
         self.setMaximumSize(width, height)
+        self.setWindowFlag(Qt.WindowStaysOnTopHint)
 
         self.watchdog = WatchDog(self.recompile)
         self.watchdog.start()
@@ -149,9 +151,18 @@ class Renderer(QtWidgets.QOpenGLWidget):
             fragment_shader=GLUtil.shader("./gl/fs.glsl"),
         )
         u_time = None
+        u_width = None
+        u_height = None
         if "u_time" in prog:
             u_time = prog["u_time"]
-        return prog, u_time
+
+        if "u_width" in prog:
+            u_width = prog["u_width"]
+
+        if "u_height" in prog:
+            u_height = prog["u_height"]
+
+        return prog, [u_time, u_width, u_height]
 
     def build_cs(self, gl):
         """
@@ -187,21 +198,29 @@ class Renderer(QtWidgets.QOpenGLWidget):
 
         self.vaos = []
         try:
-            self.program, self.u_time = self.build_prog(self.gl)
+            self.program, uniforms = self.build_prog(self.gl)
+            self.u_time, self.u_width, self.u_height = uniforms
             vao = GLUtil.screen_vao(self.gl, self.program)
             self.vaos.append(vao)
 
             self.compute, uniforms, buffers = self.build_cs(self.gl)
-            self.u_cstime, self.u_width, self.u_height = uniforms
+            self.u_cstime, self.u_cswidth, self.u_csheight = uniforms
             self.buf_in, self.buf_out = buffers
 
             if self.u_width:
                 self.u_width.value = width
 
+            if self.u_cswidth:
+                self.u_cswidth.value = width
+
             if self.u_height:
                 self.u_height.value = height
 
+            if self.u_csheight:
+                self.u_csheight.value = height
+
             self.gx, self.gy = int(width / 8), int(height / 8)
+            self.update_uniform_time()
 
             log("[Renderer] shader recompiled.")
 
@@ -227,14 +246,7 @@ class Renderer(QtWidgets.QOpenGLWidget):
         self.to_capture_buffer_in = False
         self.to_capture_buffer_out = False
 
-    def paintGL(self):
-        """
-        called every frame
-        """
-
-        # update screen
-        list(map(lambda x: x.render(), self.vaos))
-
+    def update_uniform_time(self):
         t = time.time() % 1000
         if self.u_time:
             self.u_time.value = t
@@ -242,11 +254,24 @@ class Renderer(QtWidgets.QOpenGLWidget):
         if self.u_cstime:
             self.u_cstime.value = t
 
+    def paintGL(self):
+        """
+        called every frame
+        """
+
+        # update screen
+        self.update_uniform_time()
+        for vao in self.vaos:
+            vao.render()
+
+        # copy screen frame to buffer
         if self.buf_in:
             cur_framebuffer = self.gl.detect_framebuffer()
             cur_framebuffer.read_into(
                 self.buf_in, None, 4, dtype="f4"
             )
+
+        # run frame compute shader
         self.compute.run(self.gx, self.gy)
 
         # save to png
@@ -286,11 +311,15 @@ class Renderer(QtWidgets.QOpenGLWidget):
             ii.imwrite(dst, data)
             self.to_capture_buffer_in = False
 
+            log("buf_in captured")
+
         if self.to_capture_buffer_out:
             dst = self.get_filepath("./buf_out_{}.png")
             data = GLUtil.serialize_buffer(self.buf_out)
             ii.imwrite(dst, data)
             self.to_capture_buffer_out = False
+
+            log("buf_out captured")
 
         # force update frame
         self.update()
