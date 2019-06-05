@@ -12,15 +12,23 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
 
+# global consts: do not change during runtime
 width, height = 512, 512
 
 
 def log(*arg):
+    """
+    wraps built-in print for additional extendability
+    """
+
     context = str(*arg)
     print("[Texture Builder] {}".format(context))
 
 
 class FSEventHandler(FileSystemEventHandler):
+    """
+    simple file system event handler for watchdog observer calls callback on mod
+    """
 
     def __init__(self, callback):
         super(FSEventHandler, self).__init__()
@@ -31,6 +39,10 @@ class FSEventHandler(FileSystemEventHandler):
 
 
 class WatchDog(QThread):
+    """
+    watching ./gl directory, on modified, call given bark_callback
+    running on separated thread
+    """
 
     bark = pyqtSignal()
 
@@ -43,6 +55,10 @@ class WatchDog(QThread):
         self.bark.emit()
 
     def run(self):
+        """
+        start oberserver in another separated thread, and WatchDog thread only monitors it
+        """
+
         observer = Observer()
         observer.schedule(self.ehandler, "./gl", True)
         observer.start()
@@ -50,9 +66,16 @@ class WatchDog(QThread):
 
 
 class GLUtil(object):
+    """
+    some utility methods
+    """
 
     @classmethod
     def screen_vao(cls, gl, program):
+        """
+        generate simplest screen filling quad
+        """
+
         vbo = [
             -1.0, -1.0,
             +1.0, -1.0,
@@ -117,6 +140,10 @@ class Renderer(QtWidgets.QOpenGLWidget):
         return file_name
 
     def build_prog(self, gl):
+        """
+        .
+        """
+
         prog = gl.program(
             vertex_shader=GLUtil.shader("./gl/vs.glsl"),
             fragment_shader=GLUtil.shader("./gl/fs.glsl"),
@@ -127,6 +154,10 @@ class Renderer(QtWidgets.QOpenGLWidget):
         return prog, u_time
 
     def build_cs(self, gl):
+        """
+        simple compute shader run after screen rendering
+        """
+
         cs = gl.compute_shader(GLUtil.shader("./gl/cs/cs.glsl"))
 
         u_time = None
@@ -265,26 +296,43 @@ class Renderer(QtWidgets.QOpenGLWidget):
         self.update()
 
     def keyPressEvent(self, e):
+        """
+        left ctrl: start/stop recording on press/release
+        """
+
         k = e.key()
 
+        # left ctrl
         if k == 16777249:
             self.to_record = True
 
     def keyReleaseEvent(self, e):
+        """
+        space bar: capture frame buffer
+        z: capture buf_in buffer
+        x: capture buf_out buffer
+        left ctrl: start/stop recording on press/release
+        """
+
         k = e.key()
 
+        # space bar
         if k == 32:
             self.to_capture = True
 
+        # z
         elif k == 90:
             self.to_capture_buffer_in = True
 
+        # x
         elif k == 88:
             self.to_capture_buffer_out = True
 
+        # left ctrl
         elif k == 16777249:
             self.to_record = False
 
+        # undefined
         else:
             log("undefined key pressed: {}".format(k))
 
