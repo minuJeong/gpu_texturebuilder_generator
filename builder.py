@@ -14,7 +14,9 @@ from watchdog.events import FileSystemEventHandler
 
 
 # global consts: do not change during runtime
-width, height = 512, 512
+width, height = 600, 400
+capture_width, capture_height = 1920, 1080
+record_width, record_height = 1920, 1088
 
 
 def log(*arg):
@@ -113,11 +115,15 @@ class GLUtil(object):
         return context
 
     @classmethod
-    def serialize_buffer(cls, gl_buffer):
+    def serialize_buffer(cls, gl_buffer, w, h):
+        """
+        need better performance here
+        """
+
         data = gl_buffer.read()
         data = np.frombuffer(data, dtype=np.float32)
+        data = data.reshape((h, w, 4))
         data = np.multiply(data, 255.0)
-        data = data.reshape((width, height, 4))
         data = data.astype(np.uint8)
         return data
 
@@ -164,6 +170,19 @@ class Renderer(QtWidgets.QOpenGLWidget):
 
         return prog, [u_time, u_width, u_height]
 
+    def set_gpu_wh(self, width, height):
+        if self.u_width:
+            self.u_width.value = width
+
+        if self.u_cswidth:
+            self.u_cswidth.value = width
+
+        if self.u_height:
+            self.u_height.value = height
+
+        if self.u_csheight:
+            self.u_csheight.value = height
+
     def build_cs(self, gl):
         """
         simple compute shader run after screen rendering
@@ -207,20 +226,10 @@ class Renderer(QtWidgets.QOpenGLWidget):
             self.u_cstime, self.u_cswidth, self.u_csheight = uniforms
             self.buf_in, self.buf_out = buffers
 
-            if self.u_width:
-                self.u_width.value = width
-
-            if self.u_cswidth:
-                self.u_cswidth.value = width
-
-            if self.u_height:
-                self.u_height.value = height
-
-            if self.u_csheight:
-                self.u_csheight.value = height
+            self.set_gpu_wh(width, height)
 
             self.gx, self.gy = int(width / 8), int(height / 8)
-            self.update_uniform_time()
+            self.set_gpu_time()
 
             log("[Renderer] shader recompiled.")
 
@@ -237,16 +246,20 @@ class Renderer(QtWidgets.QOpenGLWidget):
         self.recompile()
 
         self.to_capture = False
-        self.to_record = False
-        self.capture_texture = self.gl.texture((width, height), 4, dtype="f4")
+        self.capture_texture = self.gl.texture((capture_width, capture_height), 4, dtype="f4")
         capture_framebuffer = self.gl.framebuffer([self.capture_texture])
         self.capture_scope = self.gl.scope(capture_framebuffer)
+
+        self.to_record = False
+        self.record_texture = self.gl.texture((record_width, record_height), 4, dtype="f4")
+        record_framebuffer = self.gl.framebuffer([self.record_texture])
+        self.record_scope = self.gl.scope(record_framebuffer)
         self.recording = None
 
         self.to_capture_buffer_in = False
         self.to_capture_buffer_out = False
 
-    def update_uniform_time(self):
+    def set_gpu_time(self):
         t = time.time() % 1000
         if self.u_time:
             self.u_time.value = t
@@ -259,55 +272,62 @@ class Renderer(QtWidgets.QOpenGLWidget):
         called every frame
         """
 
+        # run compute shader
+        self.compute.run(self.gx, self.gy)
+
         # update screen
-        self.update_uniform_time()
+        self.set_gpu_time()
         for vao in self.vaos:
             vao.render()
 
-        # copy screen frame to buffer
-        if self.buf_in:
-            cur_framebuffer = self.gl.detect_framebuffer()
-            cur_framebuffer.read_into(
-                self.buf_in, None, 4, dtype="f4"
-            )
-
-        # run frame compute shader
-        self.compute.run(self.gx, self.gy)
-
         # save to png
         if self.to_capture:
+            log("capturing..")
+
             with self.capture_scope:
-                self.vao.render()
+                self.set_gpu_wh(capture_width, capture_height)
+                for vao in self.vaos:
+                    vao.render()
 
-            dst = self.get_filepath("./capture_{}.png")
-            data = GLUtil.serialize_buffer(self.capture_texture)
+            log("captured! storing..")
+
+            dst = self.get_filepath("./capture_{}.jpg")
+            data = GLUtil.serialize_buffer(self.capture_texture, capture_width, capture_height)
+            data = data[:, :, :-1]
             ii.imwrite(dst, data)
-            log("captured!")
 
+            log("stored!")
+
+            self.set_gpu_wh(width, height)
             self.to_capture = False
 
         # init save to video
         if self.to_record:
-            with self.capture_scope:
-                self.vao.render()
+            with self.record_scope:
+                self.set_gpu_wh(record_width, record_height)
+                for vao in self.vaos:
+                    vao.render()
 
             if not self.recording:
                 log("start recording..")
                 dst = self.get_filepath("./capture_{}.mp4")
                 self.recording = ii.get_writer(dst, fps=30)
-            data = GLUtil.serialize_buffer(self.capture_texture)
+            data = GLUtil.serialize_buffer(self.record_texture, record_width, record_height)
             self.recording.append_data(data)
+
+            self.set_gpu_wh(width, height)
 
         # close save to video
         else:
             if self.recording:
                 self.recording.close()
+
                 log("finished recording!")
             self.recording = None
 
         if self.to_capture_buffer_in:
             dst = self.get_filepath("./buf_in_{}.png")
-            data = GLUtil.serialize_buffer(self.buf_in)
+            data = GLUtil.serialize_buffer(self.buf_in, width, height)
             ii.imwrite(dst, data)
             self.to_capture_buffer_in = False
 
@@ -315,7 +335,7 @@ class Renderer(QtWidgets.QOpenGLWidget):
 
         if self.to_capture_buffer_out:
             dst = self.get_filepath("./buf_out_{}.png")
-            data = GLUtil.serialize_buffer(self.buf_out)
+            data = GLUtil.serialize_buffer(self.buf_out, width, height)
             ii.imwrite(dst, data)
             self.to_capture_buffer_out = False
 
