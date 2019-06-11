@@ -22,7 +22,7 @@ float saturate(float x) { return min(max(x, 0.0), 1.0); }
 vec2 saturate(vec2 x) { return min(max(x, 0.0), 1.0); }
 vec3 saturate(vec3 x) { return min(max(x, 0.0), 1.0); }
 
-vec2 R(vec2 x, float a=0.0)
+vec2 R(vec2 x, float a)
 {
     float c = cos(a);
     float s = sin(a);
